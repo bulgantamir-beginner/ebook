@@ -1,0 +1,8 @@
+__pycache__/
+env/
+.env
+pages.zip
+book.pdf
+pages/
+book.txt
+ocr_cache/

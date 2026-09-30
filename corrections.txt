@@ -1,0 +1,48 @@
+# OCR correction rules for app.py
+# One rule per line:
+#
+#   wrong -> right         whole-word match, case-sensitive
+#   /regex/ -> right       raw regex, matches anywhere (even inside merged words)
+#
+# Lines starting with # and blank lines are ignored.
+# After editing this file, just re-run make_searchable_pdf.py - it re-reads
+# corrections.txt every time and does NOT need PaddleOCR to run again
+# (the OCR results are already cached in ocr_cache/).
+
+Говьяат -> Гавьяат
+Ундэсний -> Үндэсний
+Теслийн -> Төслийн
+Менгөнтөр -> Мөнгөнтөр
+Жугдэр -> Жүгдэр
+Зөвлех -> Зөвлөх
+Улоон -> Улаан
+теслийг -> төслийг
+Тесөл -> Төсөл
+Годоргын -> Гадаргын
+СУЛЖЭЭНИЙ -> СҮЛЖЭЭНИЙ
+БУТЭЦ -> БҮТЭЦ
+гадорга -> гадарга
+Уүнд -> Үүнд
+Уйл -> Үйл
+өмне -> өмнө
+өгне -> өгнө
+бегөөд -> бөгөөд
+Оремдеж -> Өрөмдөж
+нөлееллийг -> нөлөөллийг
+Тер -> Төр
+уеийн -> үеийн
+темер -> төмөр
+Темер -> Төмөр
+Шуүлтүүр -> Шүүлтүүр
+өөрөе -> өөрөө
+мөчлег -> мөчлөг
+ует -> үет
+херсийг -> хөрсийг
+Овлийн -> Өвлийн
+еренхий -> ерөнхий
+
+
+# ХХК in any letter case, and with Latin X/K look-alikes, matched anywhere
+# (including inside a merged word like "КорпорациХхК")
+/[Xx\u0425\u0445][Xx\u0425\u0445][Kk\u041a\u043a]/ -> ХХК
+/[Чч\u0425\u0445][Уу\u0425\u0445][Тт\u041a\u043a]/ -> ЧУТ

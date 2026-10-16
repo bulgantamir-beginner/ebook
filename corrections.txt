@@ -9,6 +9,11 @@
 # corrections.txt every time and does NOT need PaddleOCR to run again
 # (the OCR results are already cached in ocr_cache/).
 
+
+•З   ргийн -> •Зургийн
+• Tece л -> • Tөсөл
+ТЭ3Y, -> ТЭЗҮ,
+Teceл -> Төсөл
 шаардлАГАд -> шаардлагад
 авох -> авах
 Говьяат -> Гавьяат
@@ -123,6 +128,74 @@
 
 # ХХК in any letter case, and with Latin X/K look-alikes, matched anywhere
 # (including inside a merged word like "КорпорациХхК")
-/[Xx\u0425\u0445][Xx\u0425\u0445][Kk\u041a\u043a]/ -> ХХК
-/[\u0427\u0447][\u0423\u0443][\u0422\u0442Tt]/ -> ЧУТ
+/[XxХх][XxХх][KkКк]/ -> ХХК
+/[Чч][Уу][ТтTt]/ -> ЧУТ
 /(?<!\w)[АаAa][ГгGg][АаAa](?!\w)/ -> АГА
+
+
+# ============================================================
+# -- new words -- (added by scanning all 512 cached pages for
+# rare words that are a Latin letter or digit swapped into an
+# otherwise pure-Cyrillic word - that combination is never a
+# real Mongolian word, so it's a reliable sign of an OCR misread,
+# unlike plain rarity, which also catches lots of real but
+# uncommon words and grammatical forms that must NOT be "fixed".)
+# ============================================================
+
+ажuл -> ажил
+болоH -> болон
+гүйцэтгэхA -> гүйцэтгэх
+дагуy -> дагуу
+IБарилга -> Барилга
+xийх -> хийх
+шуrам -> шугам
+төcөлд -> төсөлд
+бетоH -> бетон
+уснb -> усны
+Материаl -> Материал
+6уюу -> буюу
+Iийм -> Тийм
+Чaнарын -> Чанарын
+бyсад -> бусад
+бусaд -> бусад
+буcад -> бусад
+удирдлаrа -> удирдлага
+заасaн -> заасан
+6үлэг -> бүлэг
+шaлгалт -> шалгалт
+бэлTгэх -> бэлтгэх
+Yүнд -> Үүнд
+УГСРAХ -> УГСРАХ
+Зурaг -> Зураг
+Зyраг -> Зураг
+cуулгах -> суулгах
+сyулгах -> суулгах
+6аримт -> баримт
+төхөөрөмж3 -> төхөөрөмж
+хyраах -> хураах
+6ага -> бага
+цутrах -> цутгах
+УГСРАЛТЫH -> УГСРАЛТЫН
+тyсгаарлах -> тусгаарлах
+тусгаарлaх -> тусгаарлах
+байдлаaр -> байдлаар
+авсаH -> авсан
+xугацаа -> хугацаа
+зааваpчилгаа -> зааварчилгаа
+6ичнэ -> бичнэ
+марk -> марк
+хуурaй -> хуурай
+тyршилт -> туршилт
+тусгaж -> тусгаж
+xуудос -> хуудас
+Xэмжилт -> Хэмжилт
+баганa -> багана
+Сeндвич -> Сендвич
+Сендвичh -> Сендвич
+xарах -> харах
+oролцогч -> оролцогч
+
+# Схем1/Схем5/etc: the OCR dropped the hyphen in page labels like
+# "Схем-1", "Схем-5" - restores it for any digit 0-9, instead of
+# just deleting the number (which would lose which diagram is meant).
+/Схем(\d)/ -> Схем-\1

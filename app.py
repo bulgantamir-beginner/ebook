@@ -480,11 +480,13 @@ def _row_overlap(a, b):
 # page, diagram included - into one giant "band" and leaving the original
 # row-by-row scramble untouched. Tested directly against that page's real
 # OCR coordinates, confirming this failure before the fix below.
-def _merged_intervals(ranges):
+def _merged_intervals(ranges, tol=0.0):
+    """Merge sorted (a, b) ranges that touch, overlap, or are within `tol`
+    of each other."""
     ranges = sorted(ranges)
     merged = []
     for a, b in ranges:
-        if merged and a <= merged[-1][1]:
+        if merged and a <= merged[-1][1] + tol:
             merged[-1] = (merged[-1][0], max(merged[-1][1], b))
         else:
             merged.append((a, b))
@@ -494,9 +496,30 @@ def _merged_intervals(ranges):
 def _split_axis(indices, boxes, axis):
     """Group `indices` by which gap-separated interval their box falls into
     along `axis` (0 = x, 1 = y). None if there's no real gap on this axis -
-    every box's range touches the next, so there's nothing to cut here."""
+    every box's range touches the next, so there's nothing to cut here.
+
+    On the y-axis, ordinary row-to-row spacing within a multi-line block
+    can itself look like a 'gap' once only SOME of several side-by-side
+    columns still have content left (a short column ends while a taller
+    one continues) - tested directly against a real page: once two short
+    columns ran out, the remaining rows of the two taller ones were only
+    1-13px apart, while every genuine section break on that same page
+    (between the diagram, the table, the heading, the body text) was
+    100-700px. A flat pixel tolerance wouldn't generalize across photos
+    taken at different resolutions/zoom, so the tolerance instead scales
+    with this group's own median line height - comfortably larger than
+    ordinary row spacing, nowhere near a real section gap. The x-axis
+    doesn't get this: a real column gutter and incidental word spacing
+    are much closer in scale, so softening that test risks re-merging
+    genuinely separate columns (the bug fixed earlier)."""
     ranges = [(boxes[i][axis * 2], boxes[i][axis * 2 + 1]) for i in indices]
-    merged = _merged_intervals(ranges)
+    tol = 0.0
+    if axis == 1:
+        heights = [boxes[i][3] - boxes[i][2] for i in indices]
+        heights.sort()
+        median_h = heights[len(heights) // 2] if heights else 0.0
+        tol = 0.5 * median_h
+    merged = _merged_intervals(ranges, tol)
     if len(merged) < 2:
         return None
     groups = [[] for _ in merged]

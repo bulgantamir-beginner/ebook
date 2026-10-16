@@ -6,11 +6,11 @@ word's own position, size and rotation on the page image, so highlighting a
 word in a PDF viewer highlights that word and nothing else.
 
 Folder layout:
-    make_searchable_pdf.py
+    app.py
     fonts/DejaVuSans.ttf
     pages/1.jpg, 2.jpg, ...        (any of .jpg .jpeg .png)
 
-Run:  python make_searchable_pdf.py
+Run:  python app.py
 Output: book.pdf, book.txt.  OCR results are cached in ocr_cache/, so if you
 stop the script it resumes, and tweaking placement/corrections is instant.
 """
@@ -38,14 +38,21 @@ OUTPUT_TXT = os.path.join(BASE_DIR, "book.txt")
 CACHE_DIR = os.path.join(BASE_DIR, "ocr_cache")
 FONT_PATH = os.path.join(BASE_DIR, "fonts", "DejaVuSans.ttf")
 
-LIMIT = 70          # e.g. 1 to test on the first page only; None = all pages
+LIMIT = None          # e.g. 1 to test on the first page only; None = all pages
 ONLY_PAGES = None     # e.g. [14, 15] to test just those two pages, anywhere
                       # in the book, without touching the ones before them.
                       # Matches the number in each file's name (14.jpg -> 14).
                       # Takes priority over LIMIT when both are set.
 PAGE_WIDTH_PT = 480   # PDF page width in points (height follows the photo)
-MIN_SCORE = 0.7       # drop lines the recognizer is unsure about (also helps
-                      # ignore faint text showing through from the other side)
+MIN_SCORE = 0.5        # drop lines the recognizer is unsure about (also helps
+                       # ignore faint text showing through from the other
+                       # side). 0.7 turned out to also throw away real,
+                       # correctly-read paragraphs on pages with smaller or
+                       # denser print (whole-paragraph "skips" the recognizer
+                       # itself wasn't to blame for) - 0.5 keeps the
+                       # ghost-text filtering while dropping far less real
+                       # text. main() prints how many lines each page loses
+                       # to this so you can see if it's still too strict.
 VISIBLE_TEXT = False  # True = draw the OCR text in RED to check alignment
 
 SKIP_BLANK_PAGES = True  # detect near-blank pages and don't OCR them at all
@@ -202,6 +209,32 @@ def _word_info(text, words, regions, i):
         return None
 
 
+# Some pages carry a faint repeating stamp/watermark (e.g. an ISO-style
+# "PLAN -> DO -> CHECK -> ACT" cycle) tiled across the page. PaddleOCR reads
+# it like real text - sometimes as its own line, sometimes glued onto a
+# real word's line (e.g. "ХЭРЭГЖҮҮЛЭХDO"). Add more of the stamp's own
+# words here if a different page's watermark uses different text.
+WATERMARK_WORDS = ["PDCA", "CHECK", "PLAN", "ACT", "DO"]
+WATERMARK_RE = re.compile(
+    "|".join(re.escape(w) for w in sorted(WATERMARK_WORDS, key=len, reverse=True)),
+    re.IGNORECASE,
+)
+
+
+def strip_watermark(text):
+    """Remove watermark words wherever they appear - standalone or glued
+    onto a real word - and collapse the whitespace left behind."""
+    cleaned = WATERMARK_RE.sub("", text)
+    # Overlapping copies of the stamp (e.g. "DO" printed over "CHECK") can
+    # leave a short, STANDALONE Latin fragment behind, like the "CH" left
+    # over from "CHCHECK" once "CHECK" is removed. \b doesn't distinguish
+    # Cyrillic from Latin, so this only matches a fragment set off by
+    # whitespace/punctuation on both sides - never one still glued to a
+    # real Cyrillic word - keeping this conservative.
+    cleaned = re.sub(r"\b[A-Za-z]{1,2}\b", "", cleaned)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
 def normalize_result(res):
     """One PaddleOCR result -> plain list of lines (JSON-safe)."""
     texts = list(res.get("rec_texts", []))
@@ -212,11 +245,15 @@ def normalize_result(res):
     angles = res.get("textline_orientation_angles")
     words, regions = res.get("text_word"), res.get("text_word_region")
 
-    lines = []
+    lines, dropped = [], []
     for i, (text, poly) in enumerate(zip(texts, polys)):
         if not text.strip():
             continue
+        text = strip_watermark(text)
+        if not text:
+            continue   # the whole line was just watermark noise
         if scores is not None and i < len(scores) and float(scores[i]) < MIN_SCORE:
+            dropped.append((text, float(scores[i])))
             continue
         flipped = (angles is not None and len(angles) == len(texts)
                    and int(angles[i]) == 180)
@@ -227,6 +264,10 @@ def normalize_result(res):
             "words": _word_info(text, words, regions, i) if words is not None
                      and regions is not None else None,
         })
+    if dropped:
+        lines_out = sorted(dropped, key=lambda x: x[1])[:5]
+        print(f"    [low score, dropped {len(dropped)} line(s)] " +
+              " | ".join(f"{t!r} ({s:.2f})" for t, s in lines_out))
     return lines
 
 
@@ -307,6 +348,13 @@ def split_words(line, d, t_min, t_max):
 
 
 def fix(text):
+    # Re-applying strip_watermark here (not just in normalize_result) means
+    # pages whose OCR result was cached BEFORE the watermark filter existed
+    # still get cleaned, every run, with no need to delete ocr_cache/ and
+    # re-OCR anything - old cached JSON files only ever hold raw recognizer
+    # output, and this is the one place all of it passes through on its way
+    # into the PDF/book.txt.
+    text = strip_watermark(text)
     for pattern, right in RULES:
         text = pattern.sub(right, text)
     return text
@@ -404,18 +452,151 @@ def draw_line(c, line, k, page_h_pt, sep):
 WRAP_WIDTH_RATIO = 0.85
 
 
+def _row_overlap(a, b):
+    """1-D overlap fraction of two (lo, hi) ranges, relative to the
+    narrower one - 0 if they don't overlap at all."""
+    lo, hi = max(a[0], b[0]), min(a[1], b[1])
+    if hi <= lo:
+        return 0.0
+    return (hi - lo) / max(1e-6, min(a[1] - a[0], b[1] - b[0]))
+
+
+# A narrow side box (a pull-quote, a callout, a table cell) sitting next to
+# the main text column gets detected by PaddleOCR as its own separate lines,
+# but its OWN ordering of all the lines on the page reads roughly row by
+# row down the whole page - so a quote box's line 1, the paragraph's line
+# 1, the quote box's line 2, the paragraph's line 2, ... come out
+# interleaved, never with the quote box's own lines next to each other.
+# paragraph_separators() only ever looks at two *list-adjacent* lines, so
+# with that interleaving it can't tell "this is the same block continuing"
+# from "this is a different column that merely lines up at this height."
+#
+# A first attempt grouped lines into left-to-right bands by x-overlap alone,
+# globally across the whole page. That broke on a real page: a diagram with
+# many small scattered labels sits above the quote box and paragraph, and
+# with no notion of vertical position at all, SOME label's x-range always
+# ends up touching both the quote box's column and the paragraph's column
+# (transitively, through other labels), chaining everything - the entire
+# page, diagram included - into one giant "band" and leaving the original
+# row-by-row scramble untouched. Tested directly against that page's real
+# OCR coordinates, confirming this failure before the fix below.
+def _merged_intervals(ranges):
+    ranges = sorted(ranges)
+    merged = []
+    for a, b in ranges:
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def _split_axis(indices, boxes, axis):
+    """Group `indices` by which gap-separated interval their box falls into
+    along `axis` (0 = x, 1 = y). None if there's no real gap on this axis -
+    every box's range touches the next, so there's nothing to cut here."""
+    ranges = [(boxes[i][axis * 2], boxes[i][axis * 2 + 1]) for i in indices]
+    merged = _merged_intervals(ranges)
+    if len(merged) < 2:
+        return None
+    groups = [[] for _ in merged]
+    for i in indices:
+        v0, v1 = boxes[i][axis * 2], boxes[i][axis * 2 + 1]
+        for gi, (m0, m1) in enumerate(merged):
+            if v0 >= m0 - 1e-6 and v1 <= m1 + 1e-6:
+                groups[gi].append(i)
+                break
+    groups = [g for g in groups if g]
+    return groups if len(groups) >= 2 else None
+
+
+def _xy_cut(indices, boxes):
+    """Classic document-layout XY-cut: recursively split a set of lines by
+    whichever axis gives the COARSER split (fewer resulting groups) -
+    vertical (stacked blocks: a diagram, then a heading, then a body
+    section, top to bottom) or horizontal (side-by-side blocks: a quote
+    box and the paragraph next to it, left then right, each internally
+    still top to bottom). Unlike a single global x-overlap pass, every cut
+    here is scoped to just the indices being split at that step, so a gap
+    that only exists locally (a quote box's gutter) can't be bridged by
+    unrelated lines elsewhere on the page.
+
+    Trying vertical first, unconditionally, breaks on an actual table: a
+    row of side-by-side cells is itself a 'gap' on the vertical axis (a
+    small y-gap before the next row), so a y-first rule finds and takes
+    that cut before ever considering that the real structure is columns,
+    and ends up splitting the table row by row - reading column A's first
+    cell, then column B's, then back to column A, forever interleaved
+    instead of each column coming out as one continuous block. Comparing
+    both axes and taking whichever leaves FEWER groups favors the coarser,
+    more structural division - a handful of stacked sections, or a
+    handful of side-by-side columns - over a fine chop into every single
+    row, which is what a table's rows look like under a y-only test. Ties
+    go to vertical, since plain stacking (section after section down a
+    normal page) is the more common case and should win when a page
+    doesn't look like a table at all."""
+    if len(indices) <= 1:
+        return list(indices)
+    gy = _split_axis(indices, boxes, axis=1)
+    gx = _split_axis(indices, boxes, axis=0)
+    if gy and gx:
+        groups = gy if len(gy) <= len(gx) else gx
+    else:
+        groups = gy or gx
+    if groups:
+        out = []
+        for g in groups:
+            out.extend(_xy_cut(g, boxes))
+        return out
+    return sorted(indices, key=lambda i: boxes[i][2])   # base case: top to bottom
+
+
+def reading_order(lines):
+    """Reorder `lines` into real reading order via XY-cut, instead of
+    PaddleOCR's own row-by-row-across-the-whole-page order."""
+    if len(lines) <= 1:
+        return lines
+    boxes = []
+    for line in lines:
+        p = np.asarray(line["poly"], dtype=float)
+        boxes.append((p[:, 0].min(), p[:, 0].max(), p[:, 1].min(), p[:, 1].max()))
+    order = _xy_cut(list(range(len(lines))), boxes)
+    return [lines[i] for i in order]
+
+
 def paragraph_separators(lines, k):
     """One separator (' ' or '\\n') per line in `lines`, deciding for each
-    whether it continues into the next line (wrap) or ends there."""
+    whether it continues into the next line (wrap) or ends there.
+
+    A wrap-join is only ever allowed between two lines whose x-ranges
+    actually OVERLAP - i.e. the same reading column, by the same test
+    reading_order() uses to tell columns apart in the first place. Width
+    alone isn't enough to gate this: once lines are in correct column-by-
+    column order (after reading_order()), the END of a short column sits
+    right next to the START of the next column in the list, and that next
+    column's first line can easily be wide enough, relative to the page's
+    widest line, to look like a 'wrap' by width - even though it's a
+    completely different cell/column and the two were never at the same
+    row either. Requiring real x-overlap rules that out directly, instead
+    of trying to special-case every way two unrelated lines can end up
+    list-adjacent."""
     widths = []
+    boxes = []   # (x_min, x_max, y_min, y_max) in raw image pixels
     for line in lines:
         d, u, t_min, t_max, s_min, s_max = line_frame(line["poly"], line["flipped"])
         widths.append((t_max - t_min) * k)
+        p = np.asarray(line["poly"], dtype=float)
+        boxes.append((p[:, 0].min(), p[:, 0].max(), p[:, 1].min(), p[:, 1].max()))
     max_w = max(widths) if widths else 0.0
     seps = []
     for i, w in enumerate(widths):
         is_last = (i + 1 == len(widths))
-        wraps = (not is_last) and max_w > 0 and w >= WRAP_WIDTH_RATIO * max_w
+        wraps = False
+        if not is_last and max_w > 0 and w >= WRAP_WIDTH_RATIO * max_w:
+            x0, x1, _, _ = boxes[i]
+            nx0, nx1, _, _ = boxes[i + 1]
+            same_column = min(x1, nx1) > max(x0, nx0)   # real overlap
+            wraps = same_column
         seps.append(" " if wraps else "\n")
     return seps
 
@@ -425,6 +606,7 @@ def build_pdf(pages, all_lines):
     c = canvas.Canvas(OUTPUT_PDF)
     text_out = []
     for n, (path, lines) in enumerate(zip(pages, all_lines), 1):
+        lines = reading_order(lines)
         img_path, w, h = upright_image(path)
         k = PAGE_WIDTH_PT / w
         page_h = h * k

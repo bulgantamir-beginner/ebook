@@ -38,7 +38,7 @@ def fix(text):
 
 
 def main():
-    max_count = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+    max_count = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 
     counts = Counter()
     locations = {}  # word -> first "page: line text" seen, for context
